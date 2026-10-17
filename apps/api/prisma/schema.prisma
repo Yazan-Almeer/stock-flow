@@ -1,0 +1,206 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  STAFF
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum InventoryTransactionType {
+  INITIAL_STOCK
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  TRANSFER_OUT
+  TRANSFER_IN
+  CORRECTION
+}
+
+enum StockTransferStatus {
+  DRAFT
+  APPROVED
+  DISPATCHED
+  RECEIVED
+  CANCELLED
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  name         String
+  email        String     @unique
+  passwordHash String     @map("password_hash")
+  role         UserRole
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  transactions InventoryTransaction[]
+  transfers    StockTransfer[]
+  auditLogs    AuditLog[]
+
+  @@index([role])
+  @@index([status])
+  @@map("users")
+}
+
+model Branch {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  code      String   @unique
+  address   String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  balances             InventoryBalance[]
+  transactions         InventoryTransaction[]
+  sourceTransfers      StockTransfer[]        @relation("SourceBranch")
+  destinationTransfers StockTransfer[]        @relation("DestinationBranch")
+
+  @@index([isActive])
+  @@map("branches")
+}
+
+model Category {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String
+  slug      String    @unique
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  products  Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id          String   @id @default(uuid()) @db.Uuid
+  categoryId  String?  @map("category_id") @db.Uuid
+  name        String
+  sku         String   @unique
+  description String?
+  costPrice   Decimal? @map("cost_price") @db.Decimal(12, 2)
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  category      Category?              @relation(fields: [categoryId], references: [id])
+  balances      InventoryBalance[]
+  transactions  InventoryTransaction[]
+  transferItems StockTransferItem[]
+
+  @@index([categoryId])
+  @@index([isActive])
+  @@map("products")
+}
+
+model InventoryBalance {
+  id           String   @id @default(uuid()) @db.Uuid
+  branchId     String   @map("branch_id") @db.Uuid
+  productId    String   @map("product_id") @db.Uuid
+  quantity     Int      @default(0)
+  reorderPoint Int      @default(0) @map("reorder_point")
+  targetStock  Int      @default(0) @map("target_stock")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  branch  Branch  @relation(fields: [branchId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+
+  @@unique([branchId, productId])
+  @@index([branchId, quantity])
+  @@index([productId, quantity])
+  @@map("inventory_balances")
+}
+
+model InventoryTransaction {
+  id              String                   @id @default(uuid()) @db.Uuid
+  branchId        String                   @map("branch_id") @db.Uuid
+  productId       String                   @map("product_id") @db.Uuid
+  performedById   String?                  @map("performed_by_id") @db.Uuid
+  stockTransferId String?                  @map("stock_transfer_id") @db.Uuid
+  type            InventoryTransactionType
+  quantityDelta   Int                      @map("quantity_delta")
+  quantityAfter   Int                      @map("quantity_after")
+  reason          String?
+  createdAt       DateTime                 @default(now()) @map("created_at")
+
+  branch        Branch         @relation(fields: [branchId], references: [id])
+  product       Product        @relation(fields: [productId], references: [id])
+  performedBy   User?          @relation(fields: [performedById], references: [id])
+  stockTransfer StockTransfer? @relation(fields: [stockTransferId], references: [id])
+
+  @@index([branchId, createdAt])
+  @@index([productId, createdAt])
+  @@index([type, createdAt])
+  @@index([stockTransferId])
+  @@map("inventory_transactions")
+}
+
+model StockTransfer {
+  id                  String              @id @default(uuid()) @db.Uuid
+  sourceBranchId      String              @map("source_branch_id") @db.Uuid
+  destinationBranchId String              @map("destination_branch_id") @db.Uuid
+  createdById         String              @map("created_by_id") @db.Uuid
+  status              StockTransferStatus @default(DRAFT)
+  notes               String?
+  approvedAt          DateTime?           @map("approved_at")
+  dispatchedAt        DateTime?           @map("dispatched_at")
+  receivedAt          DateTime?           @map("received_at")
+  cancelledAt         DateTime?           @map("cancelled_at")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+
+  sourceBranch      Branch                 @relation("SourceBranch", fields: [sourceBranchId], references: [id])
+  destinationBranch Branch                 @relation("DestinationBranch", fields: [destinationBranchId], references: [id])
+  createdBy         User                   @relation(fields: [createdById], references: [id])
+  items             StockTransferItem[]
+  transactions      InventoryTransaction[]
+
+  @@index([sourceBranchId])
+  @@index([destinationBranchId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("stock_transfers")
+}
+
+model StockTransferItem {
+  id              String   @id @default(uuid()) @db.Uuid
+  stockTransferId String   @map("stock_transfer_id") @db.Uuid
+  productId       String   @map("product_id") @db.Uuid
+  quantity        Int
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  stockTransfer StockTransfer @relation(fields: [stockTransferId], references: [id])
+  product       Product       @relation(fields: [productId], references: [id])
+
+  @@unique([stockTransferId, productId])
+  @@index([productId])
+  @@map("stock_transfer_items")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String?  @map("user_id") @db.Uuid
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id") @db.Uuid
+  action     String
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([userId, createdAt])
+  @@map("audit_logs")
+}
