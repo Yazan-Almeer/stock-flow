@@ -1,8 +1,24 @@
-import 'dotenv/config';
-import { app } from './app.js';
+import app from './app';
+import { env } from './config/env';
+import logger from './config/logger';
 
-const PORT = process.env.PORT || 4000;
+const PORT = env.PORT || 3001;
 
-app.listen(PORT, () => {
-  console.log(`🚀 StockFlow API running on http://localhost:${PORT}`);
+const server = app.listen(PORT, () => {
+  logger.info(`🚀 Server running in ${env.NODE_ENV} mode on port ${PORT}`);
+});
+
+process.on('unhandledRejection', (err: Error) => {
+  logger.error('UNHANDLED REJECTION! 💥 Shutting down...');
+  logger.error(err.name, err.message);
+  server.close(() => {
+    process.exit(1);
+  });
+});
+
+process.on('SIGTERM', () => {
+  logger.info('👋 SIGTERM RECEIVED. Shutting down gracefully');
+  server.close(() => {
+    logger.info('💥 Process terminated!');
+  });
 });
