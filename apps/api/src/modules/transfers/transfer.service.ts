@@ -5,9 +5,8 @@ import { StockTransferStatus, InventoryTransactionType } from '@prisma/client';
 import { getPaginationParams, createPaginatedResponse } from '../../utils/pagination';
 
 export class TransferService {
-  static async createTransfer(data: { sourceBranchId: string; destinationBranchId: string; userId: string; items: Array<{ productId: string; requestedQuantity: number }> }) {
+  static async createTransfer(data: { sourceBranchId: string; destinationBranchId: string; userId: string; items: Array<{ productId: string; quantity: number }> }) {
     return prisma.$transaction(async (tx) => {
-      // Validate branches exist
       const sourceBranch = await tx.branch.findUnique({ where: { id: data.sourceBranchId } });
       const destBranch = await tx.branch.findUnique({ where: { id: data.destinationBranchId } });
 
@@ -24,9 +23,7 @@ export class TransferService {
           items: {
             create: data.items.map((item) => ({
               productId: item.productId,
-              requestedQuantity: item.requestedQuantity,
-              dispatchedQuantity: 0,
-              receivedQuantity: 0,
+              quantity: item.quantity,
             })),
           },
         },
@@ -103,12 +100,12 @@ export class TransferService {
 
     return prisma.stockTransfer.update({
       where: { id },
-      data: { status: StockTransferStatus.APPROVED },
+      data: { status: StockTransferStatus.APPROVED, approvedAt: new Date() },
       include: { items: { include: { product: true } }, sourceBranch: true, destinationBranch: true },
     });
   }
 
-  static async dispatchTransfer(id: string, userId: string, items: Array<{ itemId: string; dispatchedQuantity: number }>) {
+  static async dispatchTransfer(id: string, userId: string) {
     const transfer = await TransferService.getTransferById(id);
 
     if (transfer.status !== StockTransferStatus.APPROVED) {
@@ -116,46 +113,28 @@ export class TransferService {
     }
 
     return prisma.$transaction(async (tx) => {
-      for (const dispatchItem of items) {
-        const transferItem = transfer.items.find((i) => i.id === dispatchItem.itemId);
-        if (!transferItem) {
-          throw ApiError.badRequest(`Transfer item not found: ${dispatchItem.itemId}`);
-        }
-
-        if (dispatchItem.dispatchedQuantity > transferItem.requestedQuantity) {
-          throw ApiError.badRequest('Dispatched quantity cannot exceed requested quantity');
-        }
-
-        // Update transfer item dispatched quantity
-        await tx.stockTransferItem.update({
-          where: { id: transferItem.id },
-          data: { dispatchedQuantity: dispatchItem.dispatchedQuantity },
+      for (const item of transfer.items) {
+        // Deduct from source branch via InventoryService
+        await InventoryService.adjustStock({
+          branchId: transfer.sourceBranchId,
+          productId: item.productId,
+          quantityChange: -item.quantity,
+          type: InventoryTransactionType.TRANSFER_OUT,
+          userId,
+          stockTransferId: transfer.id,
+          reason: `Dispatched transfer to ${transfer.destinationBranch.name}`,
         });
-
-        // Mutate inventory using InventoryService (deduct from source)
-        if (dispatchItem.dispatchedQuantity > 0) {
-          await InventoryService.adjustStock({
-            branchId: transfer.sourceBranchId,
-            productId: transferItem.productId,
-            quantityChange: -dispatchItem.dispatchedQuantity,
-            type: InventoryTransactionType.TRANSFER_OUT,
-            userId,
-            referenceType: 'STOCK_TRANSFER',
-            referenceId: transfer.id,
-            notes: `Dispatched transfer to ${transfer.destinationBranch.name}`,
-          });
-        }
       }
 
       return tx.stockTransfer.update({
         where: { id },
-        data: { status: StockTransferStatus.DISPATCHED },
+        data: { status: StockTransferStatus.DISPATCHED, dispatchedAt: new Date() },
         include: { items: { include: { product: true } }, sourceBranch: true, destinationBranch: true },
       });
     });
   }
 
-  static async receiveTransfer(id: string, userId: string, items: Array<{ itemId: string; receivedQuantity: number }>) {
+  static async receiveTransfer(id: string, userId: string) {
     const transfer = await TransferService.getTransferById(id);
 
     if (transfer.status !== StockTransferStatus.DISPATCHED) {
@@ -163,40 +142,22 @@ export class TransferService {
     }
 
     return prisma.$transaction(async (tx) => {
-      for (const receiveItem of items) {
-        const transferItem = transfer.items.find((i) => i.id === receiveItem.itemId);
-        if (!transferItem) {
-          throw ApiError.badRequest(`Transfer item not found: ${receiveItem.itemId}`);
-        }
-
-        if (receiveItem.receivedQuantity > transferItem.dispatchedQuantity) {
-          throw ApiError.badRequest('Received quantity cannot exceed dispatched quantity');
-        }
-
-        // Update transfer item received quantity
-        await tx.stockTransferItem.update({
-          where: { id: transferItem.id },
-          data: { receivedQuantity: receiveItem.receivedQuantity },
+      for (const item of transfer.items) {
+        // Add to destination branch via InventoryService
+        await InventoryService.adjustStock({
+          branchId: transfer.destinationBranchId,
+          productId: item.productId,
+          quantityChange: item.quantity,
+          type: InventoryTransactionType.TRANSFER_IN,
+          userId,
+          stockTransferId: transfer.id,
+          reason: `Received transfer from ${transfer.sourceBranch.name}`,
         });
-
-        // Mutate inventory using InventoryService (add to destination)
-        if (receiveItem.receivedQuantity > 0) {
-          await InventoryService.adjustStock({
-            branchId: transfer.destinationBranchId,
-            productId: transferItem.productId,
-            quantityChange: receiveItem.receivedQuantity,
-            type: InventoryTransactionType.TRANSFER_IN,
-            userId,
-            referenceType: 'STOCK_TRANSFER',
-            referenceId: transfer.id,
-            notes: `Received transfer from ${transfer.sourceBranch.name}`,
-          });
-        }
       }
 
       return tx.stockTransfer.update({
         where: { id },
-        data: { status: StockTransferStatus.RECEIVED },
+        data: { status: StockTransferStatus.RECEIVED, receivedAt: new Date() },
         include: { items: { include: { product: true } }, sourceBranch: true, destinationBranch: true },
       });
     });
@@ -213,24 +174,21 @@ export class TransferService {
       // If already dispatched, revert stock to source branch
       if (transfer.status === StockTransferStatus.DISPATCHED) {
         for (const item of transfer.items) {
-          if (item.dispatchedQuantity > 0) {
-            await InventoryService.adjustStock({
-              branchId: transfer.sourceBranchId,
-              productId: item.productId,
-              quantityChange: item.dispatchedQuantity,
-              type: InventoryTransactionType.CORRECTION,
-              userId,
-              referenceType: 'STOCK_TRANSFER_CANCEL',
-              referenceId: transfer.id,
-              notes: `Reverted stock due to cancelled transfer`,
-            });
-          }
+          await InventoryService.adjustStock({
+            branchId: transfer.sourceBranchId,
+            productId: item.productId,
+            quantityChange: item.quantity,
+            type: InventoryTransactionType.CORRECTION,
+            userId,
+            stockTransferId: transfer.id,
+            reason: 'Reverted stock due to cancelled transfer',
+          });
         }
       }
 
       return tx.stockTransfer.update({
         where: { id },
-        data: { status: StockTransferStatus.CANCELLED },
+        data: { status: StockTransferStatus.CANCELLED, cancelledAt: new Date() },
         include: { items: { include: { product: true } }, sourceBranch: true, destinationBranch: true },
       });
     });

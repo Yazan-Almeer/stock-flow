@@ -1,5 +1,5 @@
 import { PrismaClient, UserRole, UserStatus, StockTransferStatus, InventoryTransactionType } from '@prisma/client';
-import * as bcrypt from 'bcryptjs';
+import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
@@ -139,6 +139,8 @@ async function main() {
           branchId: branch.id,
           productId: prod.id,
           quantity: initialQty,
+          reorderPoint: 10,
+          targetStock: 50,
         },
       });
 
@@ -146,14 +148,11 @@ async function main() {
         data: {
           branchId: branch.id,
           productId: prod.id,
-          userId: adminUser.id,
+          performedById: adminUser.id,
           type: InventoryTransactionType.INITIAL_STOCK,
-          quantityChange: initialQty,
-          previousQuantity: 0,
-          newQuantity: initialQty,
-          referenceType: 'SEED',
-          referenceId: 'INITIAL',
-          notes: 'Initial opening stock seed',
+          quantityDelta: initialQty,
+          quantityAfter: initialQty,
+          reason: 'Initial opening stock seed',
         },
       });
     }
@@ -172,15 +171,11 @@ async function main() {
         create: [
           {
             productId: laptop.id,
-            requestedQuantity: 5,
-            dispatchedQuantity: 5,
-            receivedQuantity: 0,
+            quantity: 5,
           },
           {
             productId: chair.id,
-            requestedQuantity: 10,
-            dispatchedQuantity: 10,
-            receivedQuantity: 0,
+            quantity: 10,
           },
         ],
       },

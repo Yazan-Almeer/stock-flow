@@ -19,7 +19,7 @@ export class InventoryController {
       quantityChange,
       type,
       userId,
-      notes,
+      reason: notes,
     });
 
     res.status(200).json({ success: true, data: result });

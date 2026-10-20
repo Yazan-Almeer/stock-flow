@@ -37,19 +37,17 @@ export class TransferController {
 
   static dispatchTransfer = asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params;
-    const { items } = req.body;
     const userId = req.user!.userId;
 
-    const transfer = await TransferService.dispatchTransfer(id, userId, items);
+    const transfer = await TransferService.dispatchTransfer(id, userId);
     res.status(200).json({ success: true, data: transfer });
   });
 
   static receiveTransfer = asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params;
-    const { items } = req.body;
     const userId = req.user!.userId;
 
-    const transfer = await TransferService.receiveTransfer(id, userId, items);
+    const transfer = await TransferService.receiveTransfer(id, userId);
     res.status(200).json({ success: true, data: transfer });
   });
 

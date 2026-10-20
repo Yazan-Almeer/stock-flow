@@ -16,12 +16,11 @@ export class InventoryService {
     quantityChange: number;
     type: InventoryTransactionType;
     userId: string;
-    referenceType?: string;
-    referenceId?: string;
-    notes?: string;
+    reason?: string;
+    stockTransferId?: string;
   }) {
     return prisma.$transaction(async (tx) => {
-      // 1. Fetch or initialize inventory balance with locking/read
+      // 1. Fetch or initialize inventory balance
       let balance = await tx.inventoryBalance.findUnique({
         where: {
           branchId_productId: {
@@ -57,19 +56,17 @@ export class InventoryService {
         });
       }
 
-      // 4. Insert immutable inventory transaction
+      // 4. Insert immutable inventory transaction (matching Prisma schema fields)
       const transaction = await tx.inventoryTransaction.create({
         data: {
           branchId: data.branchId,
           productId: data.productId,
-          userId: data.userId,
+          performedById: data.userId,
+          stockTransferId: data.stockTransferId || null,
           type: data.type,
-          quantityChange: data.quantityChange,
-          previousQuantity,
-          newQuantity,
-          referenceType: data.referenceType || 'MANUAL_ADJUSTMENT',
-          referenceId: data.referenceId || null,
-          notes: data.notes || null,
+          quantityDelta: data.quantityChange,
+          quantityAfter: newQuantity,
+          reason: data.reason || 'Manual stock adjustment',
         },
       });
 
@@ -93,7 +90,7 @@ export class InventoryService {
     }
 
     if (query.lowStock === 'true') {
-      where.quantity = { lte: 10 }; // Low stock threshold definition
+      where.quantity = { lte: 10 };
     }
 
     const [total, balances] = await Promise.all([
@@ -134,7 +131,7 @@ export class InventoryService {
         include: {
           branch: true,
           product: true,
-          user: {
+          performedBy: {
             select: { id: true, name: true, email: true },
           },
         },
